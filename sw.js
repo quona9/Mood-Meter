@@ -1,5 +1,5 @@
 // Offline support. Bump VERSION whenever you change any file so phones pick up the update.
-const VERSION = "mood-meter-v15";
+const VERSION = "mood-meter-v16";
 const FILES = [
   "./",
   "./index.html",
