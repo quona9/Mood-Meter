@@ -600,6 +600,13 @@ dialog input[type=datetime-local]{width:100%; font:inherit; color:var(--ink); ba
   <p class="small-hint" id="backupLine"></p>
   <p class="data-msg" id="dataMsg" role="status"></p>
   <div class="chips"><button class="chip danger" id="wipeBtn">Delete all my data</button></div>
+  <div id="remindersSection" hidden>
+    <h3 id="setReminders">Reminders</h3>
+    <p class="small-hint" id="remState"></p>
+    <div class="chips" id="remList"></div>
+    <div class="newtag"><input type="time" id="remTime" value="20:00" aria-label="Reminder time"><button class="chip" id="remAdd">Add reminder</button></div>
+    <p class="small-hint" id="remExact"></p>
+  </div>
   <h3 id="setLock">App lock</h3>
   <p class="small-hint" id="lockState"></p>
   <div class="chips" id="lockBtns"></div>
@@ -607,8 +614,8 @@ dialog input[type=datetime-local]{width:100%; font:inherit; color:var(--ink); ba
   <details class="about" id="setAbout">
     <summary>About and privacy</summary>
     <p><strong>Your data stays on this device.</strong> Everything you log (moods, notes, tags and settings) is stored only in this browser on this phone or computer. There are no accounts and no servers that receive your entries.</p>
-    <p><strong>Nothing you log is sent anywhere.</strong> The only network traffic is the app checking the site it’s hosted on for a newer version of its own files, and that request carries nothing you’ve logged. There are no analytics, ads, trackers or cookies, the fonts are bundled with the app, and it works offline.</p>
-    <p><strong>The one thing to know:</strong> like any website, the service hosting these files can see that your device downloaded the app (its IP address and the time). It never sees anything you log.</p>
+    <p id="aboutNet"><strong>Nothing you log is sent anywhere.</strong> The only network traffic is the app checking the site it’s hosted on for a newer version of its own files, and that request carries nothing you’ve logged. There are no analytics, ads, trackers or cookies, the fonts are bundled with the app, and it works offline.</p>
+    <p id="aboutHost"><strong>The one thing to know:</strong> like any website, the service hosting these files can see that your device downloaded the app (its IP address and the time). It never sees anything you log.</p>
     <p><strong>You’re in control.</strong> Your data leaves this device only if you export it. Clearing this site’s data in your browser, or using “Delete all my data” above, erases it for good, so export a backup now and then if you want to keep it.</p>
     <p><strong>About the chart.</strong> The mood meter idea comes from the RULER approach developed by Marc Brackett and colleagues at the Yale Center for Emotional Intelligence. This app is a personal journaling tool, not a medical or mental health service.</p>
     <p class="fine">Made by Khy. Free to use and share. Fonts: Bricolage Grotesque and Cinzel Decorative, SIL Open Font License.</p>
@@ -617,6 +624,8 @@ dialog input[type=datetime-local]{width:100%; font:inherit; color:var(--ink); ba
 </dialog>
 
 <script>
+/* Running inside the Android app (Capacitor) rather than a browser? */
+const isNative = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === "function" && window.Capacitor.isNativePlatform());
 const WORDS = [
   ["Enraged","Stressed","Shocked","Surprised","Festive","Ecstatic"],
   ["Fuming","Angry","Restless","Energized","Optimistic","Excited"],
@@ -757,7 +766,7 @@ function localStore(){
     load(){ try { return JSON.parse(localStorage.getItem("mood-log") || "{}"); } catch { return {}; } },
     loadSettings(){ try { return JSON.parse(localStorage.getItem("mood-settings") || "{}"); } catch { return {}; } },
     save(){ try { localStorage.setItem("mood-log", JSON.stringify(months)); return true; } catch { storageFull(); return false; } },
-    saveSettings(){ try { localStorage.setItem("mood-settings", JSON.stringify({ theme: themeKey, tags: tagList, mode: lastLogMode, appearance, immersive })); } catch { storageFull(); } }
+    saveSettings(){ try { localStorage.setItem("mood-settings", JSON.stringify({ theme: themeKey, tags: tagList, mode: lastLogMode, appearance, immersive, reminders })); } catch { storageFull(); } }
   };
 }
 let askedPersist = false;
@@ -1166,7 +1175,7 @@ Object.entries(THEMES).forEach(([key, t]) => {
 });
 function syncThemeRadios(){ themesEl.querySelectorAll("input").forEach(i => i.checked = i.value === themeKey); }
 function openSettings(sectionId){
-  syncThemeRadios(); renderTagManager(); syncAppearance(); syncImmersive(); renderLockSettings(); updateBackupUI(); dataMsg.textContent = "";
+  syncThemeRadios(); renderTagManager(); syncAppearance(); syncImmersive(); renderLockSettings(); if (isNative) renderReminders(); updateBackupUI(); dataMsg.textContent = "";
   if (typeof themeDlg.showModal === "function") themeDlg.showModal(); else themeDlg.setAttribute("open", "");
   const sec = sectionId && document.getElementById(sectionId);
   if (sec && sec.tagName === "DETAILS") sec.open = true;
@@ -1192,6 +1201,11 @@ async function exportCSV(){
   if (!n) return "Nothing to export yet.";
   const filename = `mood-log-${ymd(new Date())}.csv`, data = buildCSV();
   const done = () => { markBackup(); return `Exported ${n} ${n === 1 ? "entry" : "entries"}.`; };
+  if (isNative){
+    if (!native.files) return "Export isn’t ready yet. Try again in a moment.";
+    try { const r = await native.files.saveText({ filename, text: data }); return r && r.saved ? done() : ""; }
+    catch { return "Export didn’t finish. Try again."; }
+  }
   // iPhone and iPad: use the share sheet ("Save to Files"), which works reliably in home-screen apps
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   if (isIOS && navigator.canShare){
@@ -1234,6 +1248,7 @@ function wipeAll(){
   months = {}; tagList = DEFAULT_TAGS.slice();
   ["mood-log", "mood-settings", "mood-lock", BACKUP_KEY, "mood-full-hinted"].forEach(k => { try { localStorage.removeItem(k); } catch {} });
   applyTheme("classic", false); applyAppearance("system", false); renderTagManager(); renderLockSettings(); updateBackupUI();
+  if (isNative){ reminders = []; scheduleReminders(); renderReminders(); }
 }
 document.getElementById("wipeBtn").addEventListener("click", () => {
   if (!confirm("Delete every entry, note, tag and setting on this device? This can’t be undone.")) return;
@@ -1588,12 +1603,14 @@ function applyAppearance(a, save){
   if (save && prev === "arcane" && appearance !== "arcane" && themeKey === "arcane") applyTheme("classic", false);
   syncThemeRadios();
   syncAppearance();
+  if (isNative) nativeBars();
   if (save) saveSettings();
 }
 /* ---------- true full screen (hides the phone's status and navigation bars) ---------- */
 var immersive = false;
-const fsSupported = !!(document.fullscreenEnabled && document.documentElement.requestFullscreen);
+const fsSupported = isNative || !!(document.fullscreenEnabled && document.documentElement.requestFullscreen);
 function enterFS(){
+  if (isNative) return;
   if (!immersive || !fsSupported || document.fullscreenElement || !lockEl.hidden) return;
   document.documentElement.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
 }
@@ -1606,13 +1623,14 @@ function syncImmersive(){
   if (h) h.textContent = !fsSupported
     ? "This phone or browser doesn’t let web apps hide its bars."
     : immersive
-      ? "The app hides the clock, battery and navigation buttons. Swipe in from the top or bottom edge to see them for a moment. If you switch apps, your next tap brings full screen back."
+      ? (isNative ? "The app hides the clock, battery and navigation buttons. Swipe in from the top or bottom edge to see them for a moment." : "The app hides the clock, battery and navigation buttons. Swipe in from the top or bottom edge to see them for a moment. If you switch apps, your next tap brings full screen back.")
       : "Hides the clock, battery and navigation buttons so the app fills the whole screen.";
 }
 function setImmersive(on, save){
   immersive = !!on;
   syncImmersive();
   if (save) saveSettings();
+  if (isNative){ nativeBars(); return; }
   if (immersive) enterFS();
   else if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
 }
@@ -1679,7 +1697,7 @@ function openMenu(){
   const bk = item("Back up now", async () => { const msg = await exportCSV(); if (msg) showNote(msg); });
   const sub = el("span", "sub", bs.text); bk.lastChild.appendChild(sub); if (bs.due) bk.classList.add("due");
   if (allEntries().length) menuEl.appendChild(bk);
-  [["setAppearance", "Appearance and colors"], ["setTags", "Tags"], ["setData", "Export, import and delete"], ["setLock", "App lock"], ["setAbout", "About and privacy"]]
+  [["setAppearance", "Appearance and colors"], ...(isNative ? [["setReminders", "Reminders"]] : []), ["setTags", "Tags"], ["setData", "Export, import and delete"], ["setLock", "App lock"], ["setAbout", "About and privacy"]]
     .forEach(([id, label]) => menuEl.appendChild(item(label, () => openSettings(id))));
   menuEl.addEventListener("keydown", e => {
     const items = [...menuEl.querySelectorAll("button")], i = items.indexOf(document.activeElement);
@@ -1798,6 +1816,7 @@ document.addEventListener("visibilitychange", () => {
 /* ---------- updates ---------- */
 let wantReload = false;
 function setupUpdates(){
+  if (isNative) return;
   if (!("serviceWorker" in navigator) || !location.protocol.startsWith("http")) return;
   navigator.serviceWorker.addEventListener("controllerchange", () => { if (wantReload){ wantReload = false; location.reload(); } });
   navigator.serviceWorker.register("sw.js").then(reg => {
@@ -1815,6 +1834,85 @@ function setupUpdates(){
   }).catch(() => {});
 }
 
+/* ---------- Android app extras (only when running as the native app) ---------- */
+var reminders = [];
+const native = { ready: false, notes: null, bars: null, files: null };
+function loadScript(src){
+  return new Promise((res, rej) => { const sc = document.createElement("script"); sc.src = src; sc.onload = res; sc.onerror = rej; document.head.appendChild(sc); });
+}
+async function initNative(){
+  try {
+    await loadScript("capacitor.js");
+    await loadScript("local-notifications.js");
+    native.notes = window.capacitorLocalNotifications.LocalNotifications;
+    native.bars = window.capacitorExports.SystemBars;
+    native.files = window.capacitorExports.registerPlugin("MoodFiles");
+    native.ready = true;
+  } catch (e){ native.ready = false; }
+  document.getElementById("aboutNet").innerHTML = "<strong>Nothing you log is sent anywhere.</strong> This app doesn’t connect to the internet at all. There are no analytics, ads, trackers or cookies, and reminders are scheduled by your phone itself.";
+  document.getElementById("aboutHost").hidden = true;
+  document.getElementById("remindersSection").hidden = false;
+  nativeBars();
+  renderReminders();
+  scheduleReminders();
+}
+function nativeBars(){
+  if (!native.bars) return;
+  const dark = appearance === "dark" || appearance === "arcane" || (appearance === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  native.bars.setStyle({ style: dark ? "DARK" : "LIGHT" }).catch(() => {});
+  (immersive ? native.bars.hide() : native.bars.show()).catch(() => {});
+}
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (isNative) nativeBars(); });
+const fmtHM = hmStr => { const [h, m] = hmStr.split(":").map(Number); return new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour:"numeric", minute:"2-digit" }); };
+async function scheduleReminders(){
+  if (!native.notes) return;
+  try {
+    const pending = await native.notes.getPending();
+    const old = (pending.notifications || []).filter(n => n.id >= 1000 && n.id < 1100).map(n => ({ id: n.id }));
+    if (old.length) await native.notes.cancel({ notifications: old });
+    if (!reminders.length) return;
+    let perm = await native.notes.checkPermissions();
+    if (perm.display !== "granted") perm = await native.notes.requestPermissions();
+    if (perm.display !== "granted"){ renderReminders("Notifications are turned off for Mood Meter. Allow them in your phone’s settings to get reminders."); return; }
+    await native.notes.schedule({ notifications: reminders.map((t, i) => {
+      const [hour, minute] = t.split(":").map(Number);
+      return { id: 1000 + i, title: "How are you, right now?", body: "Tap to log your mood.", smallIcon: "ic_stat_mood",
+        schedule: { on: { hour, minute }, allowWhileIdle: true } };
+    }) });
+    renderReminders();
+  } catch (e){ renderReminders("Couldn’t schedule reminders. Try again."); }
+}
+async function renderReminders(problem){
+  const list = document.getElementById("remList"), state = document.getElementById("remState"), exact = document.getElementById("remExact");
+  if (!list) return;
+  list.textContent = "";
+  reminders.slice().sort().forEach(t => {
+    const b = el("button", "chip", `${fmtHM(t)}  ×`); b.setAttribute("aria-label", `Remove the ${fmtHM(t)} reminder`);
+    b.addEventListener("click", () => { reminders = reminders.filter(x => x !== t); saveSettings(); scheduleReminders(); renderReminders(); });
+    list.appendChild(b);
+  });
+  state.textContent = problem || (reminders.length ? "Your phone will remind you every day at these times." : "No reminders yet. Pick a time and add it.");
+  exact.textContent = ""; exact.querySelectorAll("button").forEach(b => b.remove());
+  if (native.notes && reminders.length && native.notes.checkExactNotificationSetting){
+    try {
+      const ex = await native.notes.checkExactNotificationSetting();
+      if (ex.exact_alarm && ex.exact_alarm !== "granted"){
+        exact.textContent = "Reminders may arrive a few minutes late. ";
+        const fix = el("button", "chip", "Allow exact timing");
+        fix.addEventListener("click", async () => { try { await native.notes.changeExactNotificationSetting(); } catch {} scheduleReminders(); });
+        exact.appendChild(fix);
+      }
+    } catch {}
+  }
+}
+document.getElementById("remAdd").addEventListener("click", () => {
+  const v = document.getElementById("remTime").value;
+  if (!/^\d{2}:\d{2}$/.test(v) || reminders.includes(v)) return;
+  if (reminders.length >= 6){ renderReminders("That’s the most reminders the app keeps. Remove one first."); return; }
+  reminders = [...reminders, v]; saveSettings(); scheduleReminders(); renderReminders();
+});
+document.addEventListener("visibilitychange", () => { if (isNative && document.visibilityState === "visible") nativeBars(); });
+
 /* ---------- boot ---------- */
 (function boot(){
   store = localStore();
@@ -1824,6 +1922,8 @@ function setupUpdates(){
   applyTheme(ls.theme || "classic", false);
   applyAppearance(ls.appearance || "system", false);
   immersive = !!ls.immersive; syncImmersive();
+  reminders = Array.isArray(ls.reminders) ? ls.reminders.filter(t => /^\d{2}:\d{2}$/.test(t)) : [];
+  if (isNative) initNative();
   setMode(ls.mode || "simple", false);
   statusEl.textContent = "Saved on this device";
   updateBackupUI();
