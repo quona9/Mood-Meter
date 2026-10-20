@@ -583,6 +583,11 @@ dialog input[type=datetime-local]{width:100%; font:inherit; color:var(--ink); ba
     <button class="chip" role="radio" data-ap="system">Match my phone</button><button class="chip" role="radio" data-ap="light">Light</button><button class="chip" role="radio" data-ap="dark">Dark</button><button class="chip" role="radio" data-ap="arcane">Arcane ✧</button>
   </div>
   <p class="small-hint" id="apHint"></p>
+  <p class="small-hint" style="margin-top:14px; font-weight:600; color:var(--ink)">Phone bars</p>
+  <div class="chips" id="immersive" role="radiogroup" aria-label="Phone bars" style="margin-top:6px">
+    <button class="chip" role="radio" data-im="off">Show</button><button class="chip" role="radio" data-im="on">Hide for true full screen</button>
+  </div>
+  <p class="small-hint" id="imHint"></p>
   <h3 id="setColors">Color palette</h3>
   <div class="themes" id="themes" role="radiogroup" aria-label="Color theme"></div>
   <h3 id="setTags">Tags</h3>
@@ -752,7 +757,7 @@ function localStore(){
     load(){ try { return JSON.parse(localStorage.getItem("mood-log") || "{}"); } catch { return {}; } },
     loadSettings(){ try { return JSON.parse(localStorage.getItem("mood-settings") || "{}"); } catch { return {}; } },
     save(){ try { localStorage.setItem("mood-log", JSON.stringify(months)); return true; } catch { storageFull(); return false; } },
-    saveSettings(){ try { localStorage.setItem("mood-settings", JSON.stringify({ theme: themeKey, tags: tagList, mode: lastLogMode, appearance })); } catch { storageFull(); } }
+    saveSettings(){ try { localStorage.setItem("mood-settings", JSON.stringify({ theme: themeKey, tags: tagList, mode: lastLogMode, appearance, immersive })); } catch { storageFull(); } }
   };
 }
 let askedPersist = false;
@@ -1161,7 +1166,7 @@ Object.entries(THEMES).forEach(([key, t]) => {
 });
 function syncThemeRadios(){ themesEl.querySelectorAll("input").forEach(i => i.checked = i.value === themeKey); }
 function openSettings(sectionId){
-  syncThemeRadios(); renderTagManager(); syncAppearance(); renderLockSettings(); updateBackupUI(); dataMsg.textContent = "";
+  syncThemeRadios(); renderTagManager(); syncAppearance(); syncImmersive(); renderLockSettings(); updateBackupUI(); dataMsg.textContent = "";
   if (typeof themeDlg.showModal === "function") themeDlg.showModal(); else themeDlg.setAttribute("open", "");
   const sec = sectionId && document.getElementById(sectionId);
   if (sec && sec.tagName === "DETAILS") sec.open = true;
@@ -1585,6 +1590,36 @@ function applyAppearance(a, save){
   syncAppearance();
   if (save) saveSettings();
 }
+/* ---------- true full screen (hides the phone's status and navigation bars) ---------- */
+var immersive = false;
+const fsSupported = !!(document.fullscreenEnabled && document.documentElement.requestFullscreen);
+function enterFS(){
+  if (!immersive || !fsSupported || document.fullscreenElement || !lockEl.hidden) return;
+  document.documentElement.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
+}
+function syncImmersive(){
+  document.querySelectorAll("#immersive [data-im]").forEach(b => {
+    const on = (b.dataset.im === "on") === immersive;
+    b.setAttribute("aria-pressed", String(on)); b.setAttribute("aria-checked", String(on)); b.disabled = !fsSupported;
+  });
+  const h = document.getElementById("imHint");
+  if (h) h.textContent = !fsSupported
+    ? "This phone or browser doesn’t let web apps hide its bars."
+    : immersive
+      ? "The app hides the clock, battery and navigation buttons. Swipe in from the top or bottom edge to see them for a moment. If you switch apps, your next tap brings full screen back."
+      : "Hides the clock, battery and navigation buttons so the app fills the whole screen.";
+}
+function setImmersive(on, save){
+  immersive = !!on;
+  syncImmersive();
+  if (save) saveSettings();
+  if (immersive) enterFS();
+  else if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+}
+document.querySelectorAll("#immersive [data-im]").forEach(b => b.addEventListener("click", () => setImmersive(b.dataset.im === "on", true)));
+// browsers only allow full screen right after a tap, so any tap re-enters it (after switching apps, for example)
+document.addEventListener("click", enterFS, true);
+
 function syncAppearance(){
   const hint = document.getElementById("apHint");
   if (hint) hint.textContent = appearance === "arcane"
@@ -1788,6 +1823,7 @@ function setupUpdates(){
   if (Array.isArray(ls.tags)) tagList = ls.tags.slice();
   applyTheme(ls.theme || "classic", false);
   applyAppearance(ls.appearance || "system", false);
+  immersive = !!ls.immersive; syncImmersive();
   setMode(ls.mode || "simple", false);
   statusEl.textContent = "Saved on this device";
   updateBackupUI();
